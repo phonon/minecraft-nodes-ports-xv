@@ -49,3 +49,9 @@ checkSavePeriod: 1200
 # save path
 dirSave: "plugins/ports"
 pathSave: "save.json"
+
+# xv vehicle prototype names that can warp
+vehiclesCanWarp: [
+  "debug_ship",
+  "debug_longship",
+]

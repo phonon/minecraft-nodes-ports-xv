@@ -735,6 +735,9 @@ public object Ports {
     // dynmap path
     public var pathDynmap: Path = Paths.get("plugins", "dynmap", "web", "nodes").normalize()
 
+    // set of xv vehicle prototype names that are allowed to port warp
+    public var vehiclesCanWarp: HashSet<String> = HashSet()
+
     // ==============================
     // engine internal
     // ==============================
@@ -852,6 +855,8 @@ public object Ports {
 
         Ports.dirSave = config.getString("dirSave")?.let{ p -> Paths.get(p) } ?: Ports.dirSave
         Ports.pathSave = config.getString("pathSave")?.let{ p -> Ports.dirSave.resolve(p) } ?: Ports.pathSave
+
+        Ports.vehiclesCanWarp = config.getStringList("vehiclesCanWarp").toHashSet()
     }
 
     /**
@@ -1454,7 +1459,17 @@ public object Ports {
             }
             // 3. player in a custom plugin vehicle (ArmorStand only)
             else if ( entityVehicle.type == EntityType.ARMOR_STAND ) {
-                vehiclesToWarp.add(entityVehicle)
+                val vehicle = Ports.plugin?.xv?.getVehicleFromEntity(entityVehicle)
+                if ( vehicle !== null ) {
+                    if ( !Ports.vehiclesCanWarp.contains(vehicle.prototype.name) ) {
+                        Message.error(player, "You cannot port warp in this vehicle")
+                        return
+                    }
+                    vehiclesToWarp.add(entityVehicle)
+                } else {
+                    Message.error(player, "Invalid vehicle")
+                    return
+                }
             }
         }
 
