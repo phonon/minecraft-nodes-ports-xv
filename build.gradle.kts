@@ -15,7 +15,7 @@ val VERSION = "0.0.13"
 
 // dependency version tags
 val VERSION_NODES = "0.0.13"
-val VERSION_XV = "0.0.3"
+val VERSION_XV = "0.0.4"
 
 // base of output jar name
 val OUTPUT_JAR_NAME = "nodes-ports-xv"
