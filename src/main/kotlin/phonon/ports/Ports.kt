@@ -9,8 +9,6 @@
 
 package phonon.ports
 
-import java.io.File
-import java.io.FileReader
 import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 import java.nio.ByteBuffer
@@ -747,7 +745,7 @@ public object Ports {
     private val gson: Gson = Gson()
 
     // bukkit plugin binding
-    private var plugin: Plugin? = null
+    private var plugin: PortPlugin? = null
 
     // main ports container
     public var ports: HashMap<String, Port> = hashMapOf()
@@ -776,7 +774,7 @@ public object Ports {
     /**
      * Bind to plugin
      */
-    public fun initialize(plugin: Plugin) {
+    public fun initialize(plugin: PortPlugin) {
         Ports.plugin = plugin
     }
 
@@ -784,6 +782,7 @@ public object Ports {
      * Run when plugin disables
      */
     public fun onDisable() {
+        Ports.plugin = null // avoid reference leak
         Ports.saveTask?.cancel()
         Ports.savePortData(Ports.pathSave)
     }
@@ -798,13 +797,28 @@ public object Ports {
         }
 
         // get config file
-        val configFile = File(plugin.getDataFolder().getPath(), "config.yml")
-        if ( !configFile.exists() ) {
+        // NOTE: NOT USING DEFAULT getDataFolder() BECAUSE WE WANT
+        // COMPATIBILITY WITH REGULAR NODES PORTS PLUGIN
+        val configFile = Paths.get("plugins", "ports", "config.yml")
+        if ( !Files.exists(configFile) ) {
             plugin.getLogger().info("No config found: generating default config.yml")
-            plugin.saveDefaultConfig()
+
+            // create config folder if does not exist
+            val configFolder = Paths.get("plugins", "ports")
+            if ( !Files.exists(configFolder) ) {
+                Files.createDirectories(configFolder)
+            }
+            
+            Files.write(
+                configFile,
+                plugin.getResource("config.yml")!!.readAllBytes(),
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+            )
         }
 
-        val config = YamlConfiguration.loadConfiguration(configFile)
+        val config = YamlConfiguration.loadConfiguration(Files.newBufferedReader(configFile))
 
         Ports.debug = config.getBoolean("debug", false)
 
@@ -849,15 +863,30 @@ public object Ports {
             return
         }
 
-        // get port config file
-        val configFile = File(plugin.getDataFolder().getPath(), "ports.yml")
-        if ( !configFile.exists() ) {
+        // get port config file from "/plugins/ports/ports.yml"
+        // NOTE: NOT USING DEFAULT getDataFolder() BECAUSE WE WANT
+        // COMPATIBILITY WITH REGULAR NODES PORTS PLUGIN
+        val configFile = Paths.get("plugins", "ports", "ports.yml")
+        if ( !Files.exists(configFile) ) {
             plugin.getLogger().info("Saving default ports.yml")
-            plugin.saveResource("ports.yml", false)
-            return
+
+            // create config folder if does not exist
+            val configFolder = Paths.get("plugins", "ports")
+            if ( !Files.exists(configFolder) ) {
+                Files.createDirectories(configFolder)
+            }
+
+            Files.write(
+                configFile,
+                plugin.getResource("ports.yml")!!.readAllBytes(),
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+            )
+            return // nothing to read
         }
 
-        val config = YamlConfiguration.loadConfiguration(configFile)
+        val config = YamlConfiguration.loadConfiguration(Files.newBufferedReader(configFile))
 
         try {
             // structures to load
@@ -1120,8 +1149,10 @@ public object Ports {
                 System.err.println("No saved data at ${path}")
                 return
             }
-
-            val json = JsonParser().parse(FileReader(path.toString()))
+            
+            val json = Files.newBufferedReader(path).use {
+                JsonParser.parseReader(it)
+            }.asJsonObject
 
             val gson = Ports.gson
             val savedPortData = gson.fromJson(json, SavedPorts::class.java)
@@ -1403,6 +1434,7 @@ public object Ports {
         // determine who is warping and time:
         val playersToWarp: ArrayList<Player> = arrayListOf()
         val entitiesToWarp: ArrayList<Entity> = arrayListOf()
+        val vehiclesToWarp: ArrayList<Entity> = arrayListOf()
         var warpTime = destination.warpTime
 
         // 1. player by itself, no vehicle
@@ -1420,10 +1452,10 @@ public object Ports {
             if ( entityVehicle.type == EntityType.BOAT ) {
                 entitiesToWarp.add(entityVehicle)
             }
-            // // 3. player in a custom plugin vehicle (ArmorStand only)
-            // else if ( entityVehicle.type == EntityType.ARMOR_STAND ) {
-            //     // TODO
-            // }
+            // 3. player in a custom plugin vehicle (ArmorStand only)
+            else if ( entityVehicle.type == EntityType.ARMOR_STAND ) {
+                vehiclesToWarp.add(entityVehicle)
+            }
         }
 
         // do warp
@@ -1432,6 +1464,7 @@ public object Ports {
             destination,
             playersToWarp.toList(),
             entitiesToWarp.toList(),
+            vehiclesToWarp.toList(),
             player.location.clone(),
             costMaterial,
             cost,
@@ -1454,6 +1487,7 @@ public object Ports {
         val destination: Port,
         val playersToWarp: List<Player>,
         val entitiesToWarp: List<Entity>,
+        val vehiclesToWarp: List<Entity>,
         val initialLoc: Location,
         val costMaterial: Material,
         val costAmount: Int,
@@ -1508,6 +1542,7 @@ public object Ports {
                             destination,
                             playersToWarp,
                             entitiesToWarp,
+                            vehiclesToWarp,
                         )
 
                         Message.announcement(player, "${ChatColor.GREEN}Warped to ${destination.name}")
@@ -1528,7 +1563,7 @@ public object Ports {
         destination: Port,
         playersToWarp: List<Player>,
         entitiesToWarp: List<Entity>,
-        // vehiclesToWarp: List<Vehicle> // TODO: custom vehicles
+        vehiclesToWarp: List<Entity>, // entities mapped to custom vehicles
     ) {
         // calculate destination location
         val portX = destination.locX
@@ -1536,28 +1571,39 @@ public object Ports {
 
         // calculate random offset from port center pillar
         val rand = ThreadLocalRandom.current()
-        val xoffset0 = rand.nextDouble() * Ports.maxDistanceFromPortToWarp
-        val zoffset0 = rand.nextDouble() * Ports.maxDistanceFromPortToWarp
 
-        // require |x|, |z| > 1.5 so don't get stuck in pillar
-        val xoff = if ( xoffset0 > 0.0 && xoffset0 < 1.5 ) {
-            1.5
-        } else if ( xoffset0 < 0.0 && xoffset0 > -1.5 ) {
-            -1.5
-        } else {
-            xoffset0
-        }
+        // do something like 2-4 max tries here to find a
+        // warp location that is valid (not inside a solid block)
+        var x = portX + 2.0 // arbitrary starting point
+        var z = portZ + 2.0
 
-        val zoff = if ( zoffset0 > 0.0 && zoffset0 < 1.5 ) {
-            1.5
-        } else if ( zoffset0 < 0.0 && zoffset0 > -1.5 ) {
-            -1.5
-        } else {
-            zoffset0
-        }
+        var maxTries = 4
+        do {
+            val xoffset0 = rand.nextDouble() * Ports.maxDistanceFromPortToWarp
+            val zoffset0 = rand.nextDouble() * Ports.maxDistanceFromPortToWarp
 
-        val x = portX + xoff
-        val z = portZ + zoff
+            // require |x|, |z| > 1.5 so don't get stuck in pillar
+            val xoff = if ( xoffset0 > 0.0 && xoffset0 < 1.5 ) {
+                1.5
+            } else if ( xoffset0 < 0.0 && xoffset0 > -1.5 ) {
+                -1.5
+            } else {
+                xoffset0
+            }
+    
+            val zoff = if ( zoffset0 > 0.0 && zoffset0 < 1.5 ) {
+                1.5
+            } else if ( zoffset0 < 0.0 && zoffset0 > -1.5 ) {
+                -1.5
+            } else {
+                zoffset0
+            }
+
+            x = portX + xoff
+            z = portZ + zoff
+            maxTries -= 1
+        } while ( !Ports.defaultWorld.getBlockAt(x.toInt(), Ports.seaLevel.toInt(), z.toInt()).isPassable() && maxTries > 0 )
+
 
         for ( player in playersToWarp ) {
             val loc = Location(
@@ -1581,19 +1627,24 @@ public object Ports {
             Ports.teleportEntity(entity, loc)
         }
 
-        // for ( vehicle in vehiclesToWarp ) {
-        //     val loc = Location(
-        //         Ports.defaultWorld,
-        //         x,
-        //         vehicle.location.y,
-        //         z
-        //     )
-
-        //     val chunk = loc.getChunk()
-        //     chunk.load()
-
-        //     vehicle.teleport(loc)
-        // }
+        // if plugin has xv vehicles instance, do vehicle warp
+        val xv = Ports.plugin?.xv
+        if ( xv !== null ) {
+            for ( entity in vehiclesToWarp ) {
+                // get vehicle from entity and use xv teleport api
+                val vehicle = xv.getVehicleFromEntity(entity)
+                if ( vehicle !== null ) {
+                    xv.teleport(
+                        vehicle,
+                        x,
+                        Ports.seaLevel,
+                        z,
+                    )
+                }
+            }
+        } else {
+            plugin?.logger?.warning("xv not enabled, cannot warp vehicles")
+        }
     }
 
     /**
