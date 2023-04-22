@@ -51,7 +51,8 @@ dirSave: "plugins/ports"
 pathSave: "save.json"
 
 # xv vehicle prototype names that can warp
-vehiclesCanWarp: [
-  "debug_ship",
-  "debug_longship",
-]
+# mapped to their warp time multiplier, time = baseWarpTime * multiplier
+# 1.0 is default (no multiplier)
+vehiclesWarpTimeMultiplier:
+  debug_ship: 1.0
+  debug_longship: 1.0

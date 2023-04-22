@@ -735,8 +735,11 @@ public object Ports {
     // dynmap path
     public var pathDynmap: Path = Paths.get("plugins", "dynmap", "web", "nodes").normalize()
 
-    // set of xv vehicle prototype names that are allowed to port warp
-    public var vehiclesCanWarp: HashSet<String> = HashSet()
+    // map of xv vehicle prototype names to their warp time multipliers.
+    // this also acts as set of vehicles that are allowed to port warp:
+    // if a vehicle prototype name is not in this map, it is not allowed
+    // to port warp.
+    public var vehiclesWarpTimeMultiplier: HashMap<String, Double> = HashMap()
 
     // ==============================
     // engine internal
@@ -856,7 +859,21 @@ public object Ports {
         Ports.dirSave = config.getString("dirSave")?.let{ p -> Paths.get(p) } ?: Ports.dirSave
         Ports.pathSave = config.getString("pathSave")?.let{ p -> Ports.dirSave.resolve(p) } ?: Ports.pathSave
 
-        Ports.vehiclesCanWarp = config.getStringList("vehiclesCanWarp").toHashSet()
+        // parse vehiclesWarpTimeMultiplier as map from
+        // vehicle prototype name (string) => multiplier (double)
+        val vehiclesWarpTimeMultiplierMap = HashMap<String, Double>()
+        val vehiclesWarpTimeMultiplierSection = config.getConfigurationSection("vehiclesWarpTimeMultiplier")
+        if ( vehiclesWarpTimeMultiplierSection !== null ) {
+            for ( key in vehiclesWarpTimeMultiplierSection.getKeys(false) ) {
+                try {
+                    vehiclesWarpTimeMultiplierMap[key] = vehiclesWarpTimeMultiplierSection.getDouble(key)
+                } catch ( e: Exception ) {
+                    plugin.getLogger().warning("Invalid vehiclesWarpTimeMultiplier: $key")
+                }
+            }
+        }
+
+        Ports.vehiclesWarpTimeMultiplier = vehiclesWarpTimeMultiplierMap
     }
 
     /**
@@ -1088,6 +1105,7 @@ public object Ports {
         logger.info("Reloaded")
         logger.info("Num ports: ${Ports.portNames.size}")
         logger.info("Num port groups: ${Ports.portGroups.size}")
+        logger.info("Num xv vehicles can warp: ${Ports.vehiclesWarpTimeMultiplier.size}")
     }
 
     /**
@@ -1440,7 +1458,8 @@ public object Ports {
         val playersToWarp: ArrayList<Player> = arrayListOf()
         val entitiesToWarp: ArrayList<Entity> = arrayListOf()
         val vehiclesToWarp: ArrayList<Entity> = arrayListOf()
-        var warpTime = destination.warpTime
+        val baseWarpTime = destination.warpTime
+        var warpTime = baseWarpTime
 
         // 1. player by itself, no vehicle
         val entityVehicle = player.getVehicle()
@@ -1461,10 +1480,12 @@ public object Ports {
             else if ( entityVehicle.type == EntityType.ARMOR_STAND ) {
                 val vehicle = Ports.plugin?.xv?.getVehicleFromEntity(entityVehicle)
                 if ( vehicle !== null ) {
-                    if ( !Ports.vehiclesCanWarp.contains(vehicle.prototype.name) ) {
+                    val warpTimeMultiplier = Ports.vehiclesWarpTimeMultiplier.get(vehicle.prototype.name)
+                    if ( warpTimeMultiplier === null ) {
                         Message.error(player, "You cannot port warp in this vehicle")
                         return
                     }
+                    warpTime = baseWarpTime * warpTimeMultiplier
                     vehiclesToWarp.add(entityVehicle)
                 } else {
                     Message.error(player, "Invalid vehicle")
@@ -1472,6 +1493,10 @@ public object Ports {
                 }
             }
         }
+
+        // TODO:
+        // can calculate distance to destination port and scale warp time
+        // based on distance
 
         // do warp
         val task = PortWarpTask(
